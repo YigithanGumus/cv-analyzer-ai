@@ -1,0 +1,19 @@
+{
+  "name": "cv-analyzer-ai",
+  "version": "1.0.0",
+  "description": "CV Analyzer",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "@google/genai": "latest",
+    "mammoth": "latest",
+    "next": "latest",
+    "pdf-parse": "1.1.1",
+    "react": "latest",
+    "react-dom": "latest"
+  }
+}
