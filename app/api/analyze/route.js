@@ -9,6 +9,8 @@ const MODEL = 'gemini-2.5-flash';
 const MAX_MB = 10;
 const MIN_CHARS = 200;
 const MAX_CHARS = 14000;
+const MAX_OUTPUT_TOKENS = 5000;
+const MAX_ATTEMPTS = 3;
 
 const SYSTEM_PROMPT = `Sen bir ATS odakli kariyer danismanisin.
 Tum cikti Turkce olacak. CV farkli bir dildeyse icerigi Turkceye cevirip yorumla.
@@ -89,11 +91,14 @@ Kurallar:
 - improvements 12-18 madde, action_items 10-14 madde olsun.
 - formatting_issues 5-10 madde, risk_flags 5-9 madde olsun.
 - contact_info alanlarini bos birakma; veri yoksa "Bulunamadi" yaz.
-- Hicbir alan bos olmasin. CV yetersizse ATS en iyi pratiklerine dayanarak genel ve mantikli cikarimlar uret.
+- CV yetersizse ATS en iyi pratiklerine dayanarak genel ve mantikli cikarimlar uret.
+- contact_info disinda "Bulunamadi" kullanma, her alan icin anlamli icerik yaz.
+- Hicbir alan bos olmasin.
 - JSON disinda hicbir metin yazma.`;
 
-const RETRY_PROMPT = `${SYSTEM_PROMPT}
-Ek kural: Bos string, bos dizi, null kullanma. Her alan dolu olmak zorunda.`;
+const REPAIR_PROMPT = `${SYSTEM_PROMPT}
+Ek gorev: CV metni ve Onceki JSON verilecek. Onceki JSON'daki eksik veya kisa alanlari
+kurallara uygun sekilde genislet. Tum alanlar dolu olmali ve kurallara uymali.`;
 
 const RESPONSE_SCHEMA = {
   type: 'object',
@@ -216,168 +221,40 @@ const RESPONSE_SCHEMA = {
   ],
 };
 
-const DEFAULTS = {
-  summary_points: [
-    'CV genel amacini ve hedef rolunu daha net ifade et.',
-    'Basarilari sayisal metriklerle destekle.',
-    'Teknik becerileri kategori bazli sirala.',
-    'Projelerde kullanilan teknolojileri belirt.',
-    'Deneyim maddelerinde etkiyi vurgula.',
-    'Iletisim bilgilerini ve linkleri netlestir.',
-    'Kullandigin araclari ve metodolojileri ekle.',
-    'Sorumluluk ve katkilarini netlestir.',
-  ],
-  technical: [
-    'JavaScript',
-    'TypeScript',
-    'HTML',
-    'CSS',
-    'React',
-    'Node.js',
-    'SQL',
-    'Git',
-    'REST API',
-    'Docker',
-    'Testing',
-    'CI/CD',
-  ],
-  soft: [
-    'Iletisim',
-    'Takim calismasi',
-    'Problem cozme',
-    'Zaman yonetimi',
-    'Analitik dusunme',
-    'Sorumluluk',
-    'Uyum saglama',
-  ],
-  missing: [
-    'Performans optimizasyonu',
-    'Guvenlik farkindaligi',
-    'Dokumantasyon',
-    'Kod inceleme',
-    'Sistem tasarimi',
-    'Bulut servisleri',
-  ],
-  keywords_present: [
-    'Yazilim gelistirme',
-    'Web uygulamalari',
-    'Front-end',
-    'Back-end',
-    'API',
-    'Veritabani',
-    'Test',
-  ],
-  keywords_missing: ['Optimizasyon', 'Kod kalite standartlari', 'Izleme', 'Hata ayiklama', 'Guvenlik'],
-  keywords_suggested: ['Otomasyon', 'Test stratejisi', 'Sistem tasarimi', 'Performans', 'Guvenlik', 'Olceklendirme'],
-  why_fit: [
-    'Teknik beceriler hedef role uyumlu gorunuyor.',
-    'Projelerde benzer teknolojiler kullanilmis.',
-    'Takim ici isbirligi ve sorumluluk vurgusu var.',
-    'Ogrenme ve gelisim motivasyonu yansiyor.',
-    'Deneyim basliklari rol beklentileriyle uyumlu.',
-    'Problem cozme yaklasimi gorunuyor.',
-  ],
-  improvements: [
-    'Basarilari % ve sayi ile netlestir.',
-    'Teknoloji yiginini (stack) tek yerde toplu ver.',
-    'Her deneyimde gorev + etki + sonuc yapisini kullan.',
-    'Projelerde rolunu ve katkini acikla.',
-    'CV uzunlugunu 1-2 sayfa arasinda tut.',
-    'Eslesen anahtar kelimeleri arttir.',
-    'Tarih formatlarini tek tip kullan.',
-    'Yabanci dil seviyeni belirt.',
-    'LinkedIn ve GitHub linklerini ekle.',
-    'Ozeti hedef role gore ozellestir.',
-    'Otomasyon veya test orneklerini ekle.',
-    'Dokumantasyon ve surec katkilarini belirt.',
-  ],
-  action_items: [
-    'Son iki is deneyimini metriklerle guncelle.',
-    'En guclu 3 projeni ustte konumlandir.',
-    'Eksik teknik becerileri listene ekle.',
-    'CV formatini sade bir ATS uyumlu sablona gecir.',
-    'Baslik ve tarih formatlarini standardize et.',
-    'Kisa bir hedef rolu cumlesi ekle.',
-    'Anahtar kelime yogunlugunu arttir.',
-    'Egitim ve sertifikalari netlestir.',
-    'Rol/teknoloji eslesmesini acikla.',
-    'Basari odakli madde yapisini uygula.',
-  ],
-  formatting_issues: [
-    'Madde isaretleri tutarsiz gorunuyor olabilir.',
-    'Baslik hiyerarsisi net degil.',
-    'Tarih formatlari karisik olabilir.',
-    'Paragraf araliklari dengesiz olabilir.',
-    'Yazi boyutu ve bosluklar tutarsiz olabilir.',
-  ],
-  risk_flags: [
-    'Olculebilir basari ornekleri az.',
-    'Hedef rol net tanimlanmamis olabilir.',
-    'Teknik beceriler ve deneyim eslesmesi zayif olabilir.',
-    'Projelerin etki ve sonuc kismi yetersiz olabilir.',
-    'Kritik sorumluluklar net degil.',
-  ],
-  notes: [
-    'ATS icin sade font ve tek kolon onerilir.',
-    'Tarih araliklarini ay/yil formatinda birlestir.',
-    'Basliklari standart sekilde yaz (Experience, Education).',
-    'Becerileri hedef role gore onceliklendir.',
-  ],
-  strengths: [
-    'Teknik altyapi genisligi',
-    'Takim ici isbirligi',
-    'Problem cozme',
-    'Hizli ogrenme',
-    'Sorumluluk alma',
-    'Sahiplenme',
-  ],
-  weaknesses: [
-    'Metriklendirilmis basari azligi',
-    'Projelerde rol/katki netligi',
-    'CV yapisinda standartlasma eksigi',
-    'Anahtar kelime yogunlugu',
-    'Dokumantasyon vurgusu',
-  ],
-  experience_highlights: [
-    'Coklu proje deneyimi ve farkli teknoloji kullanimi.',
-    'Uygulama gelistirme ve bakim sorumlulugu.',
-    'Takim ile koordinasyon ve teslim surecleri.',
-    'Performans ve stabilite iyilestirmeleri.',
-    'Kullanici odakli cozumler uretme.',
-  ],
-  recommended_roles: ['Full Stack Developer', 'Frontend Developer', 'Backend Developer', 'Web Developer'],
-};
-
-const ROLE_KEYWORDS = [
-  { role: 'Frontend Developer', keywords: ['frontend', 'react', 'vue', 'angular', 'next', 'ui', 'css', 'html'] },
-  { role: 'Backend Developer', keywords: ['backend', 'node', 'express', 'django', 'flask', 'spring', 'api', 'microservice'] },
-  { role: 'Full Stack Developer', keywords: ['full stack', 'fullstack', 'frontend', 'backend', 'node', 'react'] },
-  { role: 'Mobile Developer', keywords: ['android', 'ios', 'react native', 'flutter', 'kotlin', 'swift'] },
-  { role: 'Data Analyst', keywords: ['sql', 'data', 'analysis', 'analytics', 'power bi', 'tableau', 'excel'] },
-  { role: 'Data Scientist', keywords: ['machine learning', 'ml', 'python', 'pandas', 'model', 'ai'] },
-  { role: 'DevOps Engineer', keywords: ['devops', 'docker', 'kubernetes', 'ci/cd', 'aws', 'azure', 'gcp'] },
-  { role: 'QA Engineer', keywords: ['qa', 'test', 'testing', 'selenium', 'cypress', 'automation'] },
-  { role: 'UI/UX Designer', keywords: ['ux', 'ui', 'figma', 'design', 'wireframe', 'prototype'] },
-];
-
 const require = createRequire(import.meta.url);
 const pdfParse = require('pdf-parse');
-
-function clampScore(score) {
-  if (Number.isNaN(score)) return null;
-  if (score < 0) return 0;
-  if (score > 100) return 100;
-  return Math.round(score);
-}
 
 function normalizeText(text) {
   return text.replace(/\s+/g, ' ').trim();
 }
 
-function normalizeTextField(value, fallback = '') {
-  if (typeof value !== 'string') return fallback;
-  const cleaned = normalizeText(value);
-  return cleaned || fallback;
+function normalizeTextField(value) {
+  if (typeof value !== 'string') return '';
+  return normalizeText(value);
+}
+
+function sanitizeList(list) {
+  if (!Array.isArray(list)) return [];
+  return list.map((item) => String(item || '').trim()).filter(Boolean);
+}
+
+function toIntScore(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return null;
+  return Math.round(num);
+}
+
+function isValidScore(value) {
+  const num = Number(value);
+  return Number.isFinite(num) && num >= 0 && num <= 100;
+}
+
+function isNonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isNonEmptyArray(value, min = 1) {
+  return Array.isArray(value) && value.filter(Boolean).length >= min;
 }
 
 function getResponseText(response) {
@@ -409,73 +286,15 @@ function safeParseJson(text) {
   }
 }
 
-function sanitizeList(list) {
-  if (!Array.isArray(list)) return [];
-  return list.map((item) => String(item || '').trim()).filter(Boolean);
-}
-
-function ensureList(list, fallbackItems) {
-  const cleaned = sanitizeList(list);
-  if (cleaned.length) return cleaned;
-  return fallbackItems ? [...fallbackItems] : [];
-}
-
-function normalizeStatus(value) {
-  const cleaned = typeof value === 'string' ? value.trim() : '';
-  return cleaned || 'belirsiz';
-}
-
-function resolveScore(value, fallback) {
-  const parsed = clampScore(Number(value));
-  if (Number.isFinite(parsed)) return parsed;
-  return fallback;
-}
-
-function normalizeScoreBreakdown(breakdown, fallback) {
+function computeMetrics(text) {
+  const words = text.split(/\s+/).filter(Boolean);
+  const wordCount = words.length;
+  const estimatedPages = wordCount ? Math.max(1, Math.round((wordCount / 450) * 10) / 10) : 1;
+  const readingTime = wordCount ? Math.max(1, Math.round(wordCount / 180)) : 1;
   return {
-    content: resolveScore(breakdown?.content, fallback.content),
-    keywords: resolveScore(breakdown?.keywords, fallback.keywords),
-    structure: resolveScore(breakdown?.structure, fallback.structure),
-    clarity: resolveScore(breakdown?.clarity, fallback.clarity),
-  };
-}
-
-function normalizeSections(sections) {
-  const fallback = 'CV metninde bu bolum acik degil; genel degerlendirme yapildi.';
-  return {
-    overview: normalizeTextField(sections?.overview, fallback),
-    experience: normalizeTextField(sections?.experience, fallback),
-    education: normalizeTextField(sections?.education, fallback),
-    projects: normalizeTextField(sections?.projects, fallback),
-    certifications: normalizeTextField(sections?.certifications, fallback),
-  };
-}
-
-function normalizeSkills(skills) {
-  return {
-    technical: ensureList(skills?.technical, DEFAULTS.technical),
-    soft: ensureList(skills?.soft, DEFAULTS.soft),
-    missing: ensureList(skills?.missing, DEFAULTS.missing),
-  };
-}
-
-function normalizeChecks(checks) {
-  return {
-    contact_info: normalizeStatus(checks?.contact_info),
-    date_consistency: normalizeStatus(checks?.date_consistency),
-    metrics: normalizeStatus(checks?.metrics),
-    length: normalizeStatus(checks?.length),
-    formatting: normalizeStatus(checks?.formatting),
-    bullet_consistency: normalizeStatus(checks?.bullet_consistency),
-    notes: ensureList(checks?.notes, DEFAULTS.notes),
-  };
-}
-
-function normalizeKeywords(keywords) {
-  return {
-    present: ensureList(keywords?.present, DEFAULTS.keywords_present),
-    missing: ensureList(keywords?.missing, DEFAULTS.keywords_missing),
-    suggested: ensureList(keywords?.suggested, DEFAULTS.keywords_suggested),
+    word_count: wordCount,
+    estimated_pages: estimatedPages,
+    reading_time_minutes: readingTime,
   };
 }
 
@@ -491,105 +310,86 @@ function extractContactInfo(text) {
   return {
     email: emailMatch ? emailMatch[0] : '',
     phone: phoneMatch ? phoneMatch[0] : '',
-    location: '',
     linkedin,
     github,
     website,
   };
 }
 
-function normalizeContactInfo(info, extracted) {
-  const fallback = 'Bulunamadi';
-  return {
-    email: normalizeTextField(info?.email, extracted.email || fallback),
-    phone: normalizeTextField(info?.phone, extracted.phone || fallback),
-    location: normalizeTextField(info?.location, fallback),
-    linkedin: normalizeTextField(info?.linkedin, extracted.linkedin || fallback),
-    github: normalizeTextField(info?.github, extracted.github || fallback),
-    website: normalizeTextField(info?.website, extracted.website || fallback),
-  };
-}
+function collectIssues(parsed) {
+  const issues = [];
 
-function inferRole(text) {
-  const lower = text.toLowerCase();
-  const scored = ROLE_KEYWORDS.map((entry) => {
-    const hits = entry.keywords.reduce((count, keyword) => (lower.includes(keyword) ? count + 1 : count), 0);
-    return { role: entry.role, score: hits };
-  }).sort((a, b) => b.score - a.score);
+  if (!parsed || typeof parsed !== 'object') {
+    issues.push('JSON parse edilemedi');
+    return issues;
+  }
 
-  const best = scored[0];
-  const recommended = scored.filter((entry) => entry.score > 0).slice(0, 4).map((entry) => entry.role);
+  if (!isNonEmptyString(parsed.language)) issues.push('language bos');
+  if (!isNonEmptyString(parsed.summary)) issues.push('summary bos');
+  if (!isNonEmptyArray(parsed.summary_points, 6)) issues.push('summary_points en az 6 madde olmali');
 
-  return {
-    role_guess: best && best.score > 0 ? best.role : 'Yazilim Gelistirici',
-    recommended_roles: recommended.length ? recommended : [...DEFAULTS.recommended_roles],
-  };
-}
+  const sections = parsed.sections || {};
+  if (!isNonEmptyString(sections.overview)) issues.push('sections.overview bos');
+  if (!isNonEmptyString(sections.experience)) issues.push('sections.experience bos');
+  if (!isNonEmptyString(sections.education)) issues.push('sections.education bos');
+  if (!isNonEmptyString(sections.projects)) issues.push('sections.projects bos');
+  if (!isNonEmptyString(sections.certifications)) issues.push('sections.certifications bos');
 
-function inferSeniority(text) {
-  const lower = text.toLowerCase();
-  if (/(staj|intern)/.test(lower)) return 'Stajyer';
-  if (/(junior|jr|entry)/.test(lower)) return 'Junior';
-  if (/(kidemli|senior|sr|lead|principal)/.test(lower)) return 'Senior';
-  if (/(manager|yonetici|head|director)/.test(lower)) return 'Yonetici';
-  return 'Mid-level';
-}
+  const skills = parsed.skills || {};
+  if (!isNonEmptyArray(skills.technical, 10)) issues.push('skills.technical en az 10 madde olmali');
+  if (!isNonEmptyArray(skills.soft, 6)) issues.push('skills.soft en az 6 madde olmali');
+  if (!isNonEmptyArray(skills.missing, 8)) issues.push('skills.missing en az 8 madde olmali');
 
-function computeTextStats(text) {
-  const words = text.split(/\s+/).filter(Boolean);
-  const wordCount = words.length;
-  const sentenceCount = Math.max(1, (text.match(/[.!?]+/g) || []).length);
-  const avgSentenceLength = wordCount / sentenceCount;
-  const sectionHits = ['experience', 'deneyim', 'education', 'egitim', 'project', 'proje', 'skills', 'beceri', 'sertifika', 'certification']
-    .reduce((count, term) => (text.toLowerCase().includes(term) ? count + 1 : count), 0);
-  const keywordHits = ROLE_KEYWORDS.reduce((total, entry) => {
-    return total + entry.keywords.reduce((count, keyword) => (text.toLowerCase().includes(keyword) ? count + 1 : count), 0);
-  }, 0);
+  const keywords = parsed.keywords || {};
+  if (!isNonEmptyArray(keywords.present, 10)) issues.push('keywords.present en az 10 madde olmali');
+  if (!isNonEmptyArray(keywords.missing, 10)) issues.push('keywords.missing en az 10 madde olmali');
+  if (!isNonEmptyArray(keywords.suggested, 10)) issues.push('keywords.suggested en az 10 madde olmali');
 
-  return { wordCount, sentenceCount, avgSentenceLength, sectionHits, keywordHits };
-}
+  const roleFit = parsed.role_fit || {};
+  if (!isNonEmptyString(roleFit.role_guess)) issues.push('role_fit.role_guess bos');
+  if (!isNonEmptyString(roleFit.seniority_guess)) issues.push('role_fit.seniority_guess bos');
+  if (!isValidScore(roleFit.fit_score)) issues.push('role_fit.fit_score 0-100 olmali');
+  if (!isNonEmptyArray(roleFit.why_fit, 4)) issues.push('role_fit.why_fit en az 4 madde olmali');
 
-function computeFallbackScores(stats) {
-  const contentBase = stats.wordCount < 200 ? 45 : stats.wordCount < 350 ? 60 : stats.wordCount < 700 ? 75 : stats.wordCount < 1000 ? 70 : 55;
-  const structureBase = 40 + stats.sectionHits * 8;
-  const keywordBase = 40 + stats.keywordHits * 3;
-  const clarityBase = stats.avgSentenceLength < 10 ? 55 : stats.avgSentenceLength < 18 ? 75 : stats.avgSentenceLength < 25 ? 65 : 50;
+  if (!isNonEmptyArray(parsed.recommended_roles, 3)) issues.push('recommended_roles en az 3 madde olmali');
+  if (!isNonEmptyArray(parsed.strengths, 4)) issues.push('strengths en az 4 madde olmali');
+  if (!isNonEmptyArray(parsed.weaknesses, 4)) issues.push('weaknesses en az 4 madde olmali');
+  if (!isNonEmptyArray(parsed.experience_highlights, 4)) issues.push('experience_highlights en az 4 madde olmali');
 
-  return {
-    content: clampScore(contentBase),
-    keywords: clampScore(keywordBase),
-    structure: clampScore(structureBase),
-    clarity: clampScore(clarityBase),
-  };
-}
+  const contact = parsed.contact_info || {};
+  if (!isNonEmptyString(contact.email)) issues.push('contact_info.email bos');
+  if (!isNonEmptyString(contact.phone)) issues.push('contact_info.phone bos');
+  if (!isNonEmptyString(contact.location)) issues.push('contact_info.location bos');
+  if (!isNonEmptyString(contact.linkedin)) issues.push('contact_info.linkedin bos');
+  if (!isNonEmptyString(contact.github)) issues.push('contact_info.github bos');
+  if (!isNonEmptyString(contact.website)) issues.push('contact_info.website bos');
 
-function computeMetrics(stats) {
-  const estimatedPages = stats.wordCount ? Math.max(1, Math.round((stats.wordCount / 450) * 10) / 10) : 1;
-  const readingTime = stats.wordCount ? Math.max(1, Math.round(stats.wordCount / 180)) : 1;
-  return {
-    word_count: stats.wordCount,
-    estimated_pages: estimatedPages,
-    reading_time_minutes: readingTime,
-  };
-}
+  const checks = parsed.ats_checks || {};
+  if (!isNonEmptyString(checks.contact_info)) issues.push('ats_checks.contact_info bos');
+  if (!isNonEmptyString(checks.date_consistency)) issues.push('ats_checks.date_consistency bos');
+  if (!isNonEmptyString(checks.metrics)) issues.push('ats_checks.metrics bos');
+  if (!isNonEmptyString(checks.length)) issues.push('ats_checks.length bos');
+  if (!isNonEmptyString(checks.formatting)) issues.push('ats_checks.formatting bos');
+  if (!isNonEmptyString(checks.bullet_consistency)) issues.push('ats_checks.bullet_consistency bos');
+  if (!isNonEmptyArray(checks.notes, 3)) issues.push('ats_checks.notes en az 3 madde olmali');
 
-function normalizeRoleFit(roleFit, fallback) {
-  return {
-    role_guess: normalizeTextField(roleFit?.role_guess, fallback.role_guess),
-    seniority_guess: normalizeTextField(roleFit?.seniority_guess, fallback.seniority_guess),
-    fit_score: resolveScore(roleFit?.fit_score, fallback.fit_score),
-    why_fit: ensureList(roleFit?.why_fit, DEFAULTS.why_fit),
-  };
+  const breakdown = parsed.score_breakdown || {};
+  if (!isValidScore(breakdown.content)) issues.push('score_breakdown.content 0-100 olmali');
+  if (!isValidScore(breakdown.keywords)) issues.push('score_breakdown.keywords 0-100 olmali');
+  if (!isValidScore(breakdown.structure)) issues.push('score_breakdown.structure 0-100 olmali');
+  if (!isValidScore(breakdown.clarity)) issues.push('score_breakdown.clarity 0-100 olmali');
+
+  if (!isValidScore(parsed.ats_score)) issues.push('ats_score 0-100 olmali');
+  if (!isNonEmptyArray(parsed.improvements, 8)) issues.push('improvements en az 8 madde olmali');
+  if (!isNonEmptyArray(parsed.action_items, 6)) issues.push('action_items en az 6 madde olmali');
+  if (!isNonEmptyArray(parsed.formatting_issues, 4)) issues.push('formatting_issues en az 4 madde olmali');
+  if (!isNonEmptyArray(parsed.risk_flags, 3)) issues.push('risk_flags en az 3 madde olmali');
+
+  return issues;
 }
 
 function isValidPayload(parsed) {
-  if (!parsed || typeof parsed !== 'object') return false;
-  const summary = normalizeTextField(parsed.summary);
-  const improvements = sanitizeList(parsed.improvements);
-  const scoreOk = Number.isFinite(Number(parsed.ats_score));
-  const summaryPoints = sanitizeList(parsed.summary_points);
-
-  return summary.length >= 30 && summaryPoints.length >= 3 && improvements.length >= 4 && scoreOk;
+  return collectIssues(parsed).length === 0;
 }
 
 async function extractPdfText(buffer) {
@@ -613,15 +413,27 @@ async function extractTextFromFile(file) {
   return '';
 }
 
-async function analyzeText(text, apiKey, prompt) {
+async function analyzeText(text, apiKey, prompt, hints, previousJson, issues) {
   const ai = new GoogleGenAI({ apiKey });
+  const parts = [`CV Metni:\n${text}`];
+
+  if (hints) {
+    parts.push(`Ek Ipuclari (otomatik):\n${JSON.stringify(hints)}`);
+  }
+  if (previousJson && typeof previousJson === 'object') {
+    parts.push(`Onceki JSON:\n${JSON.stringify(previousJson)}`);
+  }
+  if (issues && issues.length) {
+    parts.push(`Duzeltilecek noktalar:\n- ${issues.join('\n- ')}`);
+  }
+
   const response = await ai.models.generateContent({
     model: MODEL,
-    contents: `CV Metni:\n${text}`,
+    contents: parts.join('\n\n'),
     config: {
       systemInstruction: prompt,
       temperature: 0.1,
-      maxOutputTokens: 3500,
+      maxOutputTokens: MAX_OUTPUT_TOKENS,
       responseMimeType: 'application/json',
       responseSchema: RESPONSE_SCHEMA,
     },
@@ -630,53 +442,69 @@ async function analyzeText(text, apiKey, prompt) {
   return getResponseText(response);
 }
 
-function buildResult(parsed, context) {
-  const summary = normalizeTextField(parsed?.summary, 'CV ozeti olusturulamadi.');
-  const summary_points = ensureList(parsed?.summary_points, DEFAULTS.summary_points);
-  const sections = normalizeSections(parsed?.sections);
-  const skills = normalizeSkills(parsed?.skills);
-  const keywords = normalizeKeywords(parsed?.keywords);
-
-  const role_fit = normalizeRoleFit(parsed?.role_fit, context.role_fallback);
-  const recommended_roles = ensureList(parsed?.recommended_roles, context.recommended_roles);
-  const strengths = ensureList(parsed?.strengths, DEFAULTS.strengths);
-  const weaknesses = ensureList(parsed?.weaknesses, DEFAULTS.weaknesses);
-  const experience_highlights = ensureList(parsed?.experience_highlights, DEFAULTS.experience_highlights);
-  const contact_info = normalizeContactInfo(parsed?.contact_info, context.contact_info);
-
-  const ats_checks = normalizeChecks(parsed?.ats_checks);
-  const score_breakdown = normalizeScoreBreakdown(parsed?.score_breakdown, context.fallback_scores);
-  const improvements = ensureList(parsed?.improvements, DEFAULTS.improvements);
-  const action_items = ensureList(parsed?.action_items, DEFAULTS.action_items);
-  const formatting_issues = ensureList(parsed?.formatting_issues, DEFAULTS.formatting_issues);
-  const risk_flags = ensureList(parsed?.risk_flags, DEFAULTS.risk_flags);
-
-  const ats_score = resolveScore(parsed?.ats_score, context.ats_score_fallback);
-  const language = 'Turkce';
-
+function buildResult(parsed, cvMetrics) {
   return {
-    language,
-    summary,
-    summary_points,
-    sections,
-    skills,
-    keywords,
-    role_fit,
-    recommended_roles,
-    strengths,
-    weaknesses,
-    experience_highlights,
-    contact_info,
-    ats_checks,
-    score_breakdown,
-    improvements,
-    action_items,
-    formatting_issues,
-    risk_flags,
-    ats_score,
-    cv_metrics: context.cv_metrics,
-    missing_skills: skills.missing,
-    tips: improvements,
+    language: normalizeTextField(parsed?.language),
+    summary: normalizeTextField(parsed?.summary),
+    summary_points: sanitizeList(parsed?.summary_points),
+    sections: {
+      overview: normalizeTextField(parsed?.sections?.overview),
+      experience: normalizeTextField(parsed?.sections?.experience),
+      education: normalizeTextField(parsed?.sections?.education),
+      projects: normalizeTextField(parsed?.sections?.projects),
+      certifications: normalizeTextField(parsed?.sections?.certifications),
+    },
+    skills: {
+      technical: sanitizeList(parsed?.skills?.technical),
+      soft: sanitizeList(parsed?.skills?.soft),
+      missing: sanitizeList(parsed?.skills?.missing),
+    },
+    keywords: {
+      present: sanitizeList(parsed?.keywords?.present),
+      missing: sanitizeList(parsed?.keywords?.missing),
+      suggested: sanitizeList(parsed?.keywords?.suggested),
+    },
+    role_fit: {
+      role_guess: normalizeTextField(parsed?.role_fit?.role_guess),
+      seniority_guess: normalizeTextField(parsed?.role_fit?.seniority_guess),
+      fit_score: toIntScore(parsed?.role_fit?.fit_score),
+      why_fit: sanitizeList(parsed?.role_fit?.why_fit),
+    },
+    recommended_roles: sanitizeList(parsed?.recommended_roles),
+    strengths: sanitizeList(parsed?.strengths),
+    weaknesses: sanitizeList(parsed?.weaknesses),
+    experience_highlights: sanitizeList(parsed?.experience_highlights),
+    contact_info: {
+      email: normalizeTextField(parsed?.contact_info?.email),
+      phone: normalizeTextField(parsed?.contact_info?.phone),
+      location: normalizeTextField(parsed?.contact_info?.location),
+      linkedin: normalizeTextField(parsed?.contact_info?.linkedin),
+      github: normalizeTextField(parsed?.contact_info?.github),
+      website: normalizeTextField(parsed?.contact_info?.website),
+    },
+    ats_checks: {
+      contact_info: normalizeTextField(parsed?.ats_checks?.contact_info),
+      date_consistency: normalizeTextField(parsed?.ats_checks?.date_consistency),
+      metrics: normalizeTextField(parsed?.ats_checks?.metrics),
+      length: normalizeTextField(parsed?.ats_checks?.length),
+      formatting: normalizeTextField(parsed?.ats_checks?.formatting),
+      bullet_consistency: normalizeTextField(parsed?.ats_checks?.bullet_consistency),
+      notes: sanitizeList(parsed?.ats_checks?.notes),
+    },
+    score_breakdown: {
+      content: toIntScore(parsed?.score_breakdown?.content),
+      keywords: toIntScore(parsed?.score_breakdown?.keywords),
+      structure: toIntScore(parsed?.score_breakdown?.structure),
+      clarity: toIntScore(parsed?.score_breakdown?.clarity),
+    },
+    ats_score: toIntScore(parsed?.ats_score),
+    improvements: sanitizeList(parsed?.improvements),
+    action_items: sanitizeList(parsed?.action_items),
+    formatting_issues: sanitizeList(parsed?.formatting_issues),
+    risk_flags: sanitizeList(parsed?.risk_flags),
+    cv_metrics: cvMetrics,
+    missing_skills: sanitizeList(parsed?.skills?.missing),
+    tips: sanitizeList(parsed?.improvements),
   };
 }
 
@@ -724,50 +552,36 @@ export async function POST(req) {
     }
 
     const trimmed = normalized.slice(0, MAX_CHARS);
-    const stats = computeTextStats(trimmed);
-    const fallback_scores = computeFallbackScores(stats);
-    const cv_metrics = computeMetrics(stats);
-    const role_guessing = inferRole(trimmed);
-    const seniority_guess = inferSeniority(trimmed);
-    const contact_info = extractContactInfo(trimmed);
-    const ats_score_fallback = Math.round(
-      (fallback_scores.content + fallback_scores.keywords + fallback_scores.structure + fallback_scores.clarity) / 4
-    );
-    const fit_score_fallback = Math.round((fallback_scores.keywords + fallback_scores.content) / 2);
+    const cvMetrics = computeMetrics(trimmed);
+    const hints = extractContactInfo(trimmed);
 
-    let rawOutput = await analyzeText(trimmed, apiKey, SYSTEM_PROMPT);
-    let parsed = safeParseJson(rawOutput);
-    let valid = isValidPayload(parsed);
+    let parsed = null;
+    let issues = ['Ilk deneme yapilmadi'];
+    let previousJson = null;
 
-    if (!valid) {
-      rawOutput = await analyzeText(trimmed, apiKey, RETRY_PROMPT);
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+      const prompt = attempt === 0 ? SYSTEM_PROMPT : REPAIR_PROMPT;
+      const rawOutput = await analyzeText(trimmed, apiKey, prompt, hints, previousJson, issues);
       parsed = safeParseJson(rawOutput);
-      valid = isValidPayload(parsed);
+      issues = collectIssues(parsed);
+      if (issues.length === 0) break;
+      if (parsed && typeof parsed === 'object') {
+        previousJson = parsed;
+      }
     }
 
-    const result = buildResult(parsed, {
-      fallback_scores,
-      cv_metrics,
-      ats_score_fallback,
-      contact_info,
-      recommended_roles: role_guessing.recommended_roles,
-      role_fallback: {
-        role_guess: role_guessing.role_guess,
-        seniority_guess,
-        fit_score: fit_score_fallback,
-      },
-    });
-
-    if (!valid) {
+    if (!isValidPayload(parsed)) {
       return NextResponse.json(
         {
-          ...result,
-          warnings: ['Model cikti alani eksik veya uyumsuz. Varsayimlar kullanildi.'],
+          error:
+            'Model yeterli ve eksiksiz cikti uretemedi. Lutfen tekrar deneyin veya CV metnini genisletin.',
+          details: issues,
         },
-        { status: 200 }
+        { status: 422 }
       );
     }
 
+    const result = buildResult(parsed, cvMetrics);
     return NextResponse.json(result, { status: 200 });
   } catch (error) {
     console.error('Analyze error:', error);
